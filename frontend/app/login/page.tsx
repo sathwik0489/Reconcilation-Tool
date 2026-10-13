@@ -1,0 +1,13 @@
+'use client';
+import {useEffect,useState,type FormEvent} from 'react';
+import {useRouter} from 'next/navigation';
+import {ArrowRight,ShieldCheck} from 'lucide-react';
+import {api} from '@/services/api';
+import type {User} from '@/types';
+import {Brand} from '@/components/brand';
+export default function Login(){const [error,setError]=useState(''),[busy,setBusy]=useState(false),[canSkip,setCanSkip]=useState(false);const router=useRouter();
+  useEffect(()=>{let active=true;api<{development_login:boolean}>('/auth/options').then(options=>{if(active)setCanSkip(options.development_login);}).catch(()=>{});return()=>{active=false;};},[]);
+  async function skipLogin(){setError('');setBusy(true);try{await api<User>('/auth/development-login',{method:'POST'});router.replace('/dashboard');}catch(e){setError((e as Error).message);setBusy(false);}}
+  async function submit(e:FormEvent<HTMLFormElement>){e.preventDefault();setError('');setBusy(true);const values=new FormData(e.currentTarget);try{await api<User>('/auth/login',{method:'POST',body:JSON.stringify(Object.fromEntries(values))});router.replace('/dashboard');}catch(e){setError((e as Error).message);setBusy(false);}}
+  return <main className="login-page" id="main-content"><section className="login-story"><div className="brand"><Brand/></div><div><div className="eyebrow">A CLEARER VIEW OF YOUR DATA</div><h1>Connect.<br/>Validate.<br/>Reconcile.</h1><p>One workspace for your sources, targets,<br/>and every difference in between.</p></div><span className="login-foot">DATA RECONCILIATION & VISUALIZATION</span></section><section className="login-form-wrap"><div className="login-form"><span className="empty-icon"><ShieldCheck size={30}/></span><div className="eyebrow">YOUR WORKSPACE AWAITS</div><h2>Welcome back</h2><p>Sign in with your provisioned account.</p><form onSubmit={submit} className="form-stack"><label>Email address<input name="email" type="email" required autoComplete="username" placeholder="you@company.com"/></label><label>Password<input name="password" type="password" required maxLength={128} autoComplete="current-password" placeholder="Your password"/></label>{error&&<p className="notice" role="alert">{error}</p>}<button className="button" disabled={busy}>{busy?'Signing in…':'Sign in to workspace'}<ArrowRight size={20}/></button></form>{canSkip&&<div className="login-preview"><button type="button" className="button secondary" disabled={busy} onClick={skipLogin}>Skip login<ArrowRight size={20}/></button><p>Enter your local preview workspace.</p></div>}<p className="login-help">First sign-in? Your administrator provisions accounts using the secure setup command.</p></div></section></main>;
+}

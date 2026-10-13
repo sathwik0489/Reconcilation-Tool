@@ -1,0 +1,5 @@
+transaction_id,customer_id,transaction_date,amount,transaction_status
+TXN001,C001,2026-01-01,1000.00,completed
+TXN002,C002,2026-01-01,2400.00,completed
+TXN004,C004,2026-01-02,3000.00,completed
+TXN005,C003,2026-01-02,500.00,completed
