@@ -52,8 +52,10 @@ test('integration setup reviews secrets safely and enforces host policy',async({
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
   await page.getByRole('button',{name:'Cancel',exact:true}).click();
   await page.goto('/mapping');
-  await expect(page.getByRole('heading',{name:'Visual Table Mapping',exact:true})).toBeVisible();
-  await expect(page.getByRole('button',{name:'Add target branch'})).toBeVisible();
+  await expect(page.getByRole('complementary',{name:'Data sources'})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Validate'})).toBeVisible();
+  await page.getByRole('button',{name:'Validate'}).click();
+  await expect(page.getByRole('region',{name:'Validation results'})).toContainText('Connect a source table to a target table');
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
 });
 test('live sign-in, dashboard, navigation, settings, sign-out',async({page},testInfo)=>{

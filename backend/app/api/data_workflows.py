@@ -8,7 +8,7 @@ from sqlalchemy.schema import CreateTable
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.config import get_settings
-from app.models import (IntegrationConnection,IntegrationResource,RegisteredTable,TableColumn,MedallionLayer,
+from app.models import (ExternalApplication,IntegrationConnection,IntegrationResource,RegisteredTable,TableColumn,MedallionLayer,
     TableMapping,MappingEdge,MappingSource,ColumnMapping,ReconciliationJob,ReconciliationRule,ReconciliationRun,ReconciliationResult,ReconciliationDifference,User)
 from app.api.integrations import owned,writer,mapper,selected_resource
 from app.core.security import current_user
@@ -16,7 +16,7 @@ from app.schemas.integrations import TableInput
 from app.schemas.reconciliation import MappingInput,RunInput,Branch
 from app.services.integration_data import ensure_registered,column_type
 from app.connectors.integrations import postgres_engine,records,utcnow
-from app.reconciliation.engine import joined,compare
+from app.reconciliation.engine import joined,compare,prepare
 from app.services.audit import audit
 
 router=APIRouter(prefix='/api',tags=['Data workflows'])
@@ -84,10 +84,11 @@ def available(search:str=Query('',max_length=100),db:Session=Depends(get_db),use
     if search:query=query.where(RegisteredTable.table_name.icontains(search,autoescape=True))
     result=[]
     layers={l.id:l.name for l in db.scalars(select(MedallionLayer))}
+    applications={a.id:a.slug for a in db.scalars(select(ExternalApplication))}
     for table,connection in db.execute(query.order_by(RegisteredTable.table_name).limit(500)):
         fields=db.scalars(select(TableColumn).where(TableColumn.table_id==table.id).order_by(TableColumn.ordinal)).all()
-        result.append({'id':table.id,'name':table.table_name,'classification':table.classification,'schema_name':table.schema_name,'layer_id':table.layer_id,'layer':layers.get(table.layer_id),'integration_id':connection.id,
-            'columns':[{'name':c.name,'data_type':c.data_type,'qualified_name':table.table_name+'.'+c.name} for c in fields]})
+        result.append({'id':table.id,'name':table.table_name,'classification':table.classification,'schema_name':table.schema_name,'layer_id':table.layer_id,'layer':layers.get(table.layer_id),'integration_id':connection.id,'connection_name':connection.name,'application':applications.get(connection.application_id),
+            'columns':[{'name':c.name,'data_type':c.data_type,'primary_key':c.primary_key,'qualified_name':table.table_name+'.'+c.name} for c in fields]})
     return result
 
 @router.post('/mappings',status_code=201)
@@ -128,6 +129,26 @@ def save_mapping(payload:MappingInput,db:Session=Depends(get_db),user:User=Depen
     audit(db,'mapping.created',user.id,'mapping',mapping.id);db.commit()
     return {'id':mapping.id,'job_id':job.id,'mapping_type':kind}
 
+def source_rows(db,user,branch,cache):
+    """Read each source table once, qualify its columns by table name, and join them as the branch configures."""
+    datasets=[]
+    for id in branch.source_table_ids:
+        if id not in cache:
+            table,connection,resource=table_connection(db,user,id)
+            raw=records(db,connection,resource,size=100,all_rows=True)
+            cache[id]=[{**{table.table_name+'.'+k:v for k,v in row.items()},'__ids':{str(id)+':'+str(i)}} for i,row in enumerate(raw)]
+        datasets.append(cache[id])
+    return joined(datasets,branch.joins,get_settings().integration_max_rows)
+
+@router.post('/mappings/preview')
+def preview_branch(payload:Branch,limit:int=Query(50,ge=1,le=200),db:Session=Depends(get_db),user:User=Depends(mapper)):
+    # The source side of one branch exactly as a run would compare it: joined, filtered, transformed, aggregated.
+    try:rows=prepare(source_rows(db,user,payload,{}),payload)
+    except HTTPException:raise
+    except Exception:raise HTTPException(422,'Preview failed; verify the selected tables, joins, and provider permissions') from None
+    items=[{k:v for k,v in row.items() if not k.startswith('__')} for row in rows[:limit]]
+    return {'items':jsonable_encoder(items),'total':len(rows),'page':1,'page_size':limit}
+
 def mapping_job(db,user,id):
     mapping=db.get(TableMapping,id)
     if not mapping or mapping.organization_id!=user.organization_id:raise HTTPException(404,'Mapping not found')
@@ -152,14 +173,7 @@ def run(payload:RunInput,db:Session=Depends(get_db),user:User=Depends(mapper)):
         cache={};relevant=set();failed=set();results=[]
         for rule in rules:
             branch=Branch.model_validate(rule.configuration)
-            datasets=[]
-            for id in branch.source_table_ids:
-                if id not in cache:
-                    table,connection,resource=table_connection(db,user,id)
-                    raw=records(db,connection,resource,size=100,all_rows=True)
-                    cache[id]=[{**{table.table_name+'.'+k:v for k,v in row.items()},'__ids':{str(id)+':'+str(i)}} for i,row in enumerate(raw)]
-                datasets.append(cache[id])
-            source=joined(datasets,branch.joins,get_settings().integration_max_rows)
+            source=source_rows(db,user,branch,cache)
             _,connection,resource=table_connection(db,user,branch.target_table_id)
             target=records(db,connection,resource,size=100,all_rows=True)
             stats,diffs,seen,bad=compare(source,target,branch);relevant|=seen;failed|=bad

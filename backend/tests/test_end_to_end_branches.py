@@ -25,6 +25,10 @@ def test_fan_out_unique_coverage_and_csv_export(signed_in,db,authorized_hosts,mo
     tables=signed_in.get('/api/workflows/tables').json();src=next(t for t in tables if t['name']=='accounts')
     targets=[t for t in tables if t['name'] in ['payments','settlements']]
     assert {t['layer'] for t in targets}=={'bronze'}
+    previewed=signed_in.post('/api/mappings/preview',json={'source_table_ids':[src['id']],'target_table_id':targets[0]['id'],'columns':[{'source':'accounts.id','target':'id'}],'business_keys':['id'],'aggregations':[{'source':'accounts.amount','target':'amount','function':'SUM'}],'source_filters':[{'column':'accounts.amount','operator':'gt','value':'15'}]})
+    assert previewed.status_code==200,previewed.text
+    assert previewed.json()['total']==1 and previewed.json()['items']==[{'id':2,'amount':20}]
+    assert src['connection_name']=='CRM' and src['application']=='rest' and {'name','data_type','primary_key','qualified_name'}<=set(src['columns'][0])
     saved=signed_in.post('/api/mappings',json={'name':'Fan out','branches':[{'source_table_ids':[src['id']],'target_table_id':t['id'],'columns':[{'source':'accounts.id','target':'id'},{'source':'accounts.amount','target':'amount'}],'business_keys':['id']} for t in targets]})
     assert saved.status_code==201,saved.text
     assert saved.json()['mapping_type']=='one_to_many'
