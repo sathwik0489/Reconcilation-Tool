@@ -1,4 +1,4 @@
-export type User = {id:string; email:string; name:string; role:'admin'|'engineer'|'viewer'; preferences:{page_size?:number; compact_tables?:boolean}};
+export type User = {id:string; email:string; name:string; role:'admin'|'engineer'|'analyst'|'viewer'; organization_id:string; organization_name:string; preferences:{page_size?:number; compact_tables?:boolean}};
 export type Summary = {recent_connections:{id:string;name:string;application:string;status:string}[];recent_tables:{id:string;name:string;schema_name:string;classification:string}[];total_tables:number; source_tables:number; target_tables:number; connections:number; jobs:number; successful_runs:number; failed_runs:number; matched:number; mismatched:number; missing:number; extra:number; match_percentage:number|null; metric_scope:string; layers:{name:string;description:string;tables:number}[]; activity:{id:string;action:string;resource_type:string;created_at:string}[]};
 export type Module = {id:string;name:string;phase:number;description:string;count:number};
 export type Status = {status:string; database:string; migration:string; phase:number; modules:Module[]};

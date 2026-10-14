@@ -6,6 +6,7 @@ from app.models import (Base,User,DatabaseConnection,MedallionLayer,RegisteredTa
 from app.core.security import encrypt_credential,decrypt_credential,password_hasher
 from app.core.config import Settings,get_settings
 from alembic import command
+from tests.conftest import make_user
 from alembic.config import Config
 from pathlib import Path
 import pytest
@@ -24,7 +25,7 @@ def test_protected_routes(client):
 def test_auth_cookie_and_no_password(signed_in):
     response=signed_in.get('/api/auth/me')
     assert response.status_code==200
-    assert set(response.json())=={'id','email','name','role','preferences'}
+    assert set(response.json())=={'id','email','name','role','organization_id','organization_name','preferences'}
     assert signed_in.cookies.get('recon_session')
 
 def test_cookie_flags(client,admin):
@@ -63,18 +64,17 @@ def test_admin_user_creation_and_duplicate(signed_in):
     assert signed_in.post('/api/settings/users',json=body).status_code==409
 
 def test_viewer_cannot_manage_users(client,db):
-    user=User(email='viewer@example.com',name='Viewer',role='viewer',password_hash=password_hasher.hash('Viewer-password-1234'),preferences={})
-    db.add(user);db.commit()
+    user=make_user(db,'viewer@example.com','viewer','Viewer-password-1234')
     assert client.post('/api/auth/login',json={'email':user.email,'password':'Viewer-password-1234'}).status_code==200
     assert client.get('/api/settings/users').status_code==403
     assert client.post('/api/settings/users',json={'email':'x@example.com','name':'X','password':'long-password-123','role':'admin'}).status_code==403
 
 def test_live_dashboard_and_safe_connection_inventory(signed_in,db,admin):
     credential=encrypt_credential('secret-password')
-    connection=DatabaseConnection(name='Test source',connection_type='postgresql',classification='source',owner_id=admin.id,encrypted_credential=credential)
+    connection=DatabaseConnection(organization_id=admin.organization_id,name='Test source',connection_type='postgresql',classification='source',owner_id=admin.id,encrypted_credential=credential)
     db.add(connection);db.flush()
     layer=db.scalar(select(MedallionLayer).where(MedallionLayer.name=='bronze'))
-    table=RegisteredTable(connection_id=connection.id,database_name='sample',schema_name='bronze',table_name='source_transactions',classification='source',layer_id=layer.id)
+    table=RegisteredTable(organization_id=admin.organization_id,connection_id=connection.id,database_name='sample',schema_name='bronze',table_name='source_transactions',classification='source',layer_id=layer.id)
     db.add(table);db.commit()
     summary=signed_in.get('/api/dashboard/summary').json()
     assert summary['total_tables']==summary['source_tables']==1
@@ -88,7 +88,7 @@ def test_live_dashboard_and_safe_connection_inventory(signed_in,db,admin):
 
 def test_pagination_and_search(signed_in,db,admin):
     for name in ['Alpha','Beta','Gamma']:
-        db.add(DatabaseConnection(name=name,connection_type='csv',classification='source',owner_id=admin.id))
+        db.add(DatabaseConnection(organization_id=admin.organization_id,name=name,connection_type='csv',classification='source',owner_id=admin.id))
     db.commit()
     result=signed_in.get('/api/connections?page=2&page_size=2').json()
     assert result['total']==3 and len(result['items'])==1
@@ -111,16 +111,17 @@ def test_production_requires_https_and_secure_cookies():
         Settings(_env_file=None,database_url=settings.database_url,jwt_secret=settings.jwt_secret,credential_key=settings.credential_key,app_env='production',cookie_secure=False)
 
 def test_latest_run_metrics_do_not_repeat_history(signed_in,db,admin):
-    conn=DatabaseConnection(name='Conn',connection_type='csv',classification='source',owner_id=admin.id)
+    org=admin.organization_id
+    conn=DatabaseConnection(organization_id=org,name='Conn',connection_type='csv',classification='source',owner_id=admin.id)
     db.add(conn);db.flush()
-    table=RegisteredTable(connection_id=conn.id,database_name='d',schema_name='s',table_name='t',classification='target')
-    mapping=TableMapping(name='Mapping',mapping_type='one_to_one',owner_id=admin.id)
+    table=RegisteredTable(organization_id=org,connection_id=conn.id,database_name='d',schema_name='s',table_name='t',classification='target')
+    mapping=TableMapping(organization_id=org,name='Mapping',mapping_type='one_to_one',owner_id=admin.id)
     db.add_all([table,mapping]);db.flush()
     edge=MappingEdge(mapping_id=mapping.id,target_table_id=table.id)
-    job=ReconciliationJob(name='Job',mapping_id=mapping.id,owner_id=admin.id)
+    job=ReconciliationJob(organization_id=org,name='Job',mapping_id=mapping.id,owner_id=admin.id)
     db.add_all([edge,job]);db.flush()
     for year,matched in [(2025,50),(2026,8)]:
-        run=ReconciliationRun(job_id=job.id,executed_by=admin.id,status='succeeded',created_at=datetime(year,1,1,tzinfo=timezone.utc))
+        run=ReconciliationRun(organization_id=org,job_id=job.id,executed_by=admin.id,status='succeeded',created_at=datetime(year,1,1,tzinfo=timezone.utc))
         db.add(run);db.flush()
         db.add(ReconciliationResult(run_id=run.id,edge_id=edge.id,source_count=10,target_count=10,matched=matched,mismatched=2,missing=0,extra=0,duplicates=0))
     db.commit()

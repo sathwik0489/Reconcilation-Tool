@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy import String, Text, ForeignKey, DateTime, Integer, UniqueConstraint, CheckConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped,mapped_column
-from app.models.metadata import Base,Identity
+from app.models.metadata import Base,Identity,OrgScoped
 
 class ExternalApplication(Identity,Base):
     __tablename__='external_applications'
@@ -12,7 +12,7 @@ class ExternalApplication(Identity,Base):
     description: Mapped[str]=mapped_column(Text)
     authentication_methods: Mapped[list]=mapped_column(JSONB)
 
-class IntegrationConnection(Identity,Base):
+class IntegrationConnection(OrgScoped,Identity,Base):
     __tablename__='integration_connections'
     application_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('external_applications.id'))
     owner_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('users.id'),index=True)
@@ -24,7 +24,7 @@ class IntegrationConnection(Identity,Base):
     authorized_scopes: Mapped[list]=mapped_column(JSONB,default=list)
     last_successful_sync: Mapped[datetime|None]=mapped_column(DateTime(timezone=True))
     last_failed_sync: Mapped[datetime|None]=mapped_column(DateTime(timezone=True))
-    __table_args__=(UniqueConstraint('owner_id','name'),CheckConstraint("status IN ('configured','connected','error','revoked')",name='integration_status'))
+    __table_args__=(UniqueConstraint('organization_id','name',name='unique_integration_name'),CheckConstraint("status IN ('configured','connected','error','revoked')",name='integration_status'))
 
 class IntegrationAuthConfiguration(Identity,Base):
     __tablename__='integration_auth_configurations'

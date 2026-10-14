@@ -26,16 +26,19 @@ def writer(user:User=Depends(current_user)):
     if user.role not in ['admin','engineer']:raise HTTPException(403,'Engineer or administrator role required')
     return user
 
+def mapper(user:User=Depends(current_user)):
+    # Analysts configure mappings and run comparisons; they do not manage connections or destinations.
+    if user.role not in ['admin','engineer','analyst']:raise HTTPException(403,'Analyst, engineer, or administrator role required')
+    return user
+
 def owned(db,user,id,active=True):
     row=db.get(IntegrationConnection,id)
-    if not row or (row.owner_id!=user.id and user.role!='admin'):raise HTTPException(404,'Integration not found')
+    if not row or row.organization_id!=user.organization_id:raise HTTPException(404,'Integration not found')
     if active and row.status=='revoked':raise HTTPException(422,'Integration was revoked')
     return row
 
 def visible_query(user):
-    query=select(IntegrationConnection)
-    if user.role!='admin':query=query.where(IntegrationConnection.owner_id==user.id)
-    return query
+    return select(IntegrationConnection).where(IntegrationConnection.organization_id==user.organization_id)
 
 def view(db,row):
     application=db.get(ExternalApplication,row.application_id)
@@ -82,13 +85,13 @@ def create(payload:IntegrationInput,db:Session=Depends(get_db),user:User=Depends
                 if endpoint:validate_url(endpoint)
     config=payload.model_dump(exclude={'secret','client_secret','webhook_secret','username','resources','name','application','authentication_type'})
     import uuid
-    db_connection=DatabaseConnection(name=payload.name[:60]+' · '+str(uuid.uuid4()),connection_type=payload.application,
+    db_connection=DatabaseConnection(organization_id=user.organization_id,name=payload.name[:60]+' · '+str(uuid.uuid4()),connection_type=payload.application,
         classification=payload.classification,hostname=payload.hostname or None,port=payload.port if payload.application=='postgresql' else None,
         database_name=payload.database_name or None,schema_name=payload.schema_name,authentication_method=payload.authentication_type,owner_id=user.id)
     db.add(db_connection)
     try:
         db.flush()
-        row=IntegrationConnection(application_id=application.id,owner_id=user.id,database_connection_id=db_connection.id,
+        row=IntegrationConnection(organization_id=user.organization_id,application_id=application.id,owner_id=user.id,database_connection_id=db_connection.id,
             name=payload.name,authentication_type=payload.authentication_type,status='configured',configuration=config,authorized_scopes=[])
         db.add(row);db.flush()
         db_connection.credential_reference='integration:'+str(row.id)
@@ -145,9 +148,9 @@ async def file_ingestion(file:UploadFile=File(...),configuration:str=Form(...,ma
     if application_slug(db,destination)!='postgresql':raise HTTPException(422,'Choose an authorized PostgreSQL destination')
     application=db.scalar(select(ExternalApplication).where(ExternalApplication.slug=='csv'))
     if not application:raise HTTPException(503,'CSV connector migration is not applied')
-    db_connection=DatabaseConnection(name='CSV upload '+str(identifier),connection_type='csv',classification='source',authentication_method='file',owner_id=user.id)
+    db_connection=DatabaseConnection(organization_id=user.organization_id,name='CSV upload '+str(identifier),connection_type='csv',classification='source',authentication_method='file',owner_id=user.id)
     db.add(db_connection);db.flush()
-    source=IntegrationConnection(id=identifier,application_id=application.id,owner_id=user.id,database_connection_id=db_connection.id,name='CSV upload '+str(identifier)[:8],authentication_type='file',status='connected',configuration={'storage_key':str(identifier),'classification':'source'},authorized_scopes=[])
+    source=IntegrationConnection(id=identifier,organization_id=user.organization_id,application_id=application.id,owner_id=user.id,database_connection_id=db_connection.id,name='CSV upload '+str(identifier)[:8],authentication_type='file',status='connected',configuration={'storage_key':str(identifier),'classification':'source'},authorized_scopes=[])
     db.add(source);db.flush()
     db.add(IntegrationAuthConfiguration(connection_id=source.id))
     resource=IntegrationResource(id=resource_id,connection_id=source.id,name='uploaded_'+str(identifier).replace('-','')[:12],path='/file',record_path='',pagination={},schema_snapshot=infer_schema(rows),schema_version=1,available_filters=[])
@@ -297,7 +300,7 @@ async def webhook(id:UUID,request:Request,db:Session=Depends(get_db)):
     db.execute(select(IntegrationConnection).where(IntegrationConnection.id==id).with_for_update())
     prior=db.scalar(select(AuditLog.id).where(AuditLog.action=='integration.webhook',AuditLog.resource_id==str(id),AuditLog.details['event'].astext==event))
     if prior:return {'status':'duplicate'}
-    audit(db,'integration.webhook',None,'integration',id,{'event':event});db.commit()
+    audit(db,'integration.webhook',None,'integration',id,{'event':event},organization_id=row.organization_id);db.commit()
     return {'status':'accepted','message':'Signed event recorded; automatic sync execution is not enabled'}
 
 @router.get('/search')
@@ -305,10 +308,10 @@ def global_search(q:str=Query('',max_length=100),db:Session=Depends(get_db),user
     if not q.strip():return []
     items=[{'label':'Integration · '+r.name,'href':'/integrations?connection='+str(r.id)} for r in db.scalars(visible_query(user).where(IntegrationConnection.name.icontains(q,autoescape=True),IntegrationConnection.status!='revoked').limit(10))]
     for model,field,path in [(RegisteredTable,RegisteredTable.table_name,'tables'),(TableMapping,TableMapping.name,'mapping')]:
-        items.extend({'label':str(getattr(r,field.key)),'href':'/'+path} for r in db.scalars(select(model).where(field.icontains(q,autoescape=True)).limit(10)))
+        items.extend({'label':str(getattr(r,field.key)),'href':'/'+path} for r in db.scalars(select(model).where(model.organization_id==user.organization_id,field.icontains(q,autoescape=True)).limit(10)))
     return items
 
 @router.get('/notifications')
 def notifications(db:Session=Depends(get_db),user:User=Depends(current_user)):
-    query=select(AuditLog).where(AuditLog.actor_id==user.id).order_by(AuditLog.created_at.desc()).limit(10)
+    query=select(AuditLog).where(AuditLog.actor_id==user.id,AuditLog.organization_id==user.organization_id).order_by(AuditLog.created_at.desc()).limit(10)
     return [{'action':r.action,'created_at':r.created_at} for r in db.scalars(query)]

@@ -14,7 +14,7 @@ export function Integrations({user,databaseOnly=false}:{user:User;databaseOnly?:
   const [catalog,setCatalog]=useState<Catalog[]>([]),[connections,setConnections]=useState<Integration[]>([]),[selected,setSelected]=useState<Integration|null>(null);
   const [application,setApplication]=useState<Catalog|null>(null),[method,setMethod]=useState('bearer'),[step,setStep]=useState(1),[draft,setDraft]=useState<Record<string,unknown>|null>(null);
   const [error,setError]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState(false),[search,setSearch]=useState(''),[filter,setFilter]=useState('all'),[page,setPage]=useState(1),[total,setTotal]=useState(0);
-  const canWrite=user.role!=='viewer';
+  const canWrite=user.role==='admin'||user.role==='engineer';
   const load=useCallback(async()=>{try{const [apps,items]=await Promise.all([api<Catalog[]>('/integrations/catalog'),api<{items:Integration[];total:number}>(`/integrations?search=${encodeURIComponent(search)}&connected=${filter==='connected'}&page=${page}&application=${databaseOnly?'postgresql':''}`)]);setCatalog(databaseOnly?apps.filter(a=>a.slug==='postgresql'):apps);setConnections(items.items);setTotal(items.total);}catch(e){setError((e as Error).message);}},[search,filter,page,databaseOnly]);
   useEffect(()=>{void load();},[load]);
   useEffect(()=>{const id=new URLSearchParams(location.search).get('connection')||new URLSearchParams(location.search).get('authorized');if(id)api<Integration>('/integrations/'+id).then(setSelected).catch(e=>setError(e.message));},[]);
@@ -42,7 +42,7 @@ function IntegrationDetail({connection:c,user,connections,back,onChange}:{connec
   const [resources,setResources]=useState<Resource[]>([]),[resource,setResource]=useState<Resource|null>(null),[preview,setPreview]=useState<Preview|null>(null),[history,setHistory]=useState<Inventory|null>(null),[tab,setTab]=useState('resources');
   const [error,setError]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState(false),[page,setPage]=useState(1),[columns,setColumns]=useState<string[]>([]),[syncConfig,setSyncConfig]=useState(''),[revokeConfirm,setRevokeConfirm]=useState(false);
   const [destinations,setDestinations]=useState(connections.filter(r=>r.application==='postgresql'&&r.status==='connected'));
-  const canWrite=user.role!=='viewer';
+  const canWrite=user.role==='admin'||user.role==='engineer';
   const load=useCallback(async()=>{try{const [items,detail,pg]=await Promise.all([api<{items:Resource[]}>(`/integrations/${c.id}/resources`),api<Integration>(`/integrations/${c.id}`),api<{items:Integration[]}>('/integrations?page_size=100')]);setResources(items.items);onChange(detail);setDestinations(pg.items.filter(r=>r.application==='postgresql'&&r.status==='connected'));}catch(e){setError((e as Error).message);}},[c.id]);
   useEffect(()=>{void load();},[load]);
   async function action(path:string){setBusy(true);setError('');setMessage('');try{const response=await api<{message?:string;authorization_url?:string}>(`/integrations/${c.id}/${path}`,{method:'POST'});if(response.authorization_url){location.assign(response.authorization_url);return;}setMessage(response.message||'Resource schema approved and registered.');await load();}catch(e){setError((e as Error).message);}finally{setBusy(false);}}

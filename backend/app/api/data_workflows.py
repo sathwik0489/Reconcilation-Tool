@@ -10,7 +10,7 @@ from app.core.database import get_db
 from app.core.config import get_settings
 from app.models import (IntegrationConnection,IntegrationResource,RegisteredTable,TableColumn,MedallionLayer,
     TableMapping,MappingEdge,MappingSource,ColumnMapping,ReconciliationJob,ReconciliationRule,ReconciliationRun,ReconciliationResult,ReconciliationDifference,User)
-from app.api.integrations import owned,writer,selected_resource
+from app.api.integrations import owned,writer,mapper,selected_resource
 from app.core.security import current_user
 from app.schemas.integrations import TableInput
 from app.schemas.reconciliation import MappingInput,RunInput,Branch
@@ -23,7 +23,7 @@ router=APIRouter(prefix='/api',tags=['Data workflows'])
 
 def table_connection(db,user,table_id):
     row=db.get(RegisteredTable,table_id)
-    if not row:raise HTTPException(404,'Table not found')
+    if not row or row.organization_id!=user.organization_id:raise HTTPException(404,'Table not found')
     connection=db.scalar(select(IntegrationConnection).where(IntegrationConnection.database_connection_id==row.connection_id))
     if not connection:raise HTTPException(422,'Table is not attached to an executable integration')
     owned(db,user,connection.id)
@@ -80,8 +80,7 @@ def preview_table(id:UUID,page:int=Query(1,ge=1),page_size:int=Query(25,ge=1,le=
 
 @router.get('/workflows/tables')
 def available(search:str=Query('',max_length=100),db:Session=Depends(get_db),user:User=Depends(current_user)):
-    query=select(RegisteredTable,IntegrationConnection).join(IntegrationConnection,RegisteredTable.connection_id==IntegrationConnection.database_connection_id).where(IntegrationConnection.status!='revoked')
-    if user.role!='admin':query=query.where(IntegrationConnection.owner_id==user.id)
+    query=select(RegisteredTable,IntegrationConnection).join(IntegrationConnection,RegisteredTable.connection_id==IntegrationConnection.database_connection_id).where(IntegrationConnection.status!='revoked',RegisteredTable.organization_id==user.organization_id)
     if search:query=query.where(RegisteredTable.table_name.icontains(search,autoescape=True))
     result=[]
     layers={l.id:l.name for l in db.scalars(select(MedallionLayer))}
@@ -92,10 +91,10 @@ def available(search:str=Query('',max_length=100),db:Session=Depends(get_db),use
     return result
 
 @router.post('/mappings',status_code=201)
-def save_mapping(payload:MappingInput,db:Session=Depends(get_db),user:User=Depends(writer)):
+def save_mapping(payload:MappingInput,db:Session=Depends(get_db),user:User=Depends(mapper)):
     kind='one_to_many' if len(payload.branches)>1 else 'many_to_one' if len(payload.branches[0].source_table_ids)>1 else 'one_to_one'
-    mapping=TableMapping(name=payload.name,mapping_type=kind,owner_id=user.id);db.add(mapping);db.flush()
-    job=ReconciliationJob(name=payload.name,mapping_id=mapping.id,owner_id=user.id);db.add(job);db.flush()
+    mapping=TableMapping(organization_id=user.organization_id,name=payload.name,mapping_type=kind,owner_id=user.id);db.add(mapping);db.flush()
+    job=ReconciliationJob(organization_id=user.organization_id,name=payload.name,mapping_id=mapping.id,owner_id=user.id);db.add(job);db.flush()
     for branch in payload.branches:
         target,_,_=table_connection(db,user,branch.target_table_id)
         target_columns={c.name:c for c in db.scalars(select(TableColumn).where(TableColumn.table_id==target.id))}
@@ -131,7 +130,7 @@ def save_mapping(payload:MappingInput,db:Session=Depends(get_db),user:User=Depen
 
 def mapping_job(db,user,id):
     mapping=db.get(TableMapping,id)
-    if not mapping or (mapping.owner_id!=user.id and user.role!='admin'):raise HTTPException(404,'Mapping not found')
+    if not mapping or mapping.organization_id!=user.organization_id:raise HTTPException(404,'Mapping not found')
     job=db.scalar(select(ReconciliationJob).where(ReconciliationJob.mapping_id==id))
     if not job:raise HTTPException(422,'Mapping has no executable job')
     return mapping,job
@@ -143,11 +142,11 @@ def mapping_detail(id:UUID,db:Session=Depends(get_db),user:User=Depends(current_
     return {'id':mapping.id,'name':mapping.name,'mapping_type':mapping.mapping_type,'branches':[r.configuration for r in rules]}
 
 @router.post('/reconciliation/run')
-def run(payload:RunInput,db:Session=Depends(get_db),user:User=Depends(writer)):
+def run(payload:RunInput,db:Session=Depends(get_db),user:User=Depends(mapper)):
     mapping,job=mapping_job(db,user,payload.mapping_id)
     rules=db.scalars(select(ReconciliationRule).where(ReconciliationRule.job_id==job.id)).all()
     snapshot={'name':mapping.name,'mapping_type':mapping.mapping_type,'branches':[r.configuration for r in rules]}
-    run=ReconciliationRun(job_id=job.id,executed_by=user.id,status='running',started_at=utcnow(),configuration_snapshot=snapshot)
+    run=ReconciliationRun(organization_id=user.organization_id,job_id=job.id,executed_by=user.id,status='running',started_at=utcnow(),configuration_snapshot=snapshot)
     db.add(run);db.commit();started=time.monotonic()
     try:
         cache={};relevant=set();failed=set();results=[]
@@ -179,7 +178,7 @@ def run(payload:RunInput,db:Session=Depends(get_db),user:User=Depends(writer)):
 
 def owned_run(db,user,id):
     row=db.get(ReconciliationRun,id)
-    if not row:raise HTTPException(404,'Run not found')
+    if not row or row.organization_id!=user.organization_id:raise HTTPException(404,'Run not found')
     job=db.get(ReconciliationJob,row.job_id);mapping_job(db,user,job.mapping_id)
     return row
 

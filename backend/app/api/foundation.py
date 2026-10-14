@@ -12,10 +12,12 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.config import get_settings
-from app.core.security import current_user, admin_user, password_hasher, dummy_hash, make_token
+from app.core.security import (current_user, admin_user, password_hasher, dummy_hash, make_token,
+                               membership_for, enter_organization)
 from app.models import (User, DatabaseConnection, RegisteredTable, TableColumn, IngestionRun,
-                        TableMapping, ReconciliationRun, ReconciliationJob, MedallionLayer, AuditLog)
-from app.schemas.foundation import Login, UserView, Preferences, CreateUser
+                        TableMapping, ReconciliationRun, ReconciliationJob, MedallionLayer, AuditLog,
+                        Organization, OrganizationMembership)
+from app.schemas.foundation import Login, UserView, Preferences, CreateUser, OrganizationUpdate
 from app.services.audit import audit
 from app.repositories.dashboard import summary
 
@@ -43,11 +45,21 @@ def development_login(request: Request, response: Response, db: Session = Depend
         if db.scalar(select(User).where(User.email == 'local-preview@example.com')):
             raise HTTPException(409, 'Local preview account is unavailable')
         user = User(id=preview_id, email='local-preview@example.com', name='Local Preview',
-                    role='engineer', password_hash=password_hasher.hash(token_urlsafe(48)), preferences={})
+                    password_hash=password_hasher.hash(token_urlsafe(48)), preferences={})
         db.add(user)
         db.flush()
-    if not user.active or user.role != 'engineer' or user.email != 'local-preview@example.com':
+    membership = membership_for(db, user)
+    if membership is None:
+        # A separate organization: skipping sign-in never opens another organization's workspace.
+        organization = Organization(name='Local Preview')
+        db.add(organization)
+        db.flush()
+        membership = OrganizationMembership(organization_id=organization.id, user_id=user.id, role='engineer')
+        db.add(membership)
+        db.flush()
+    if not user.active or membership.role != 'engineer' or user.email != 'local-preview@example.com':
         raise HTTPException(403, 'Local preview account is unavailable')
+    enter_organization(db, user, membership)
     audit(db, 'auth.development_login', user.id, resource_id=user.id)
     db.commit()
     response.set_cookie('recon_session', make_token(user), httponly=True, secure=settings.cookie_secure,
@@ -94,10 +106,12 @@ def login(payload: Login, request: Request, response: Response, db: Session = De
         recent.append(now)
     user = db.scalar(select(User).where(User.email == str(payload.email).lower()))
     valid = password_hasher.verify(payload.password, user.password_hash if user else dummy_hash)
-    if not user or not valid or not user.active:
+    membership = membership_for(db, user) if user else None
+    if not user or not valid or not user.active or not membership:
         audit(db, 'auth.login_failed')
         db.commit()
         raise HTTPException(401, 'Email or password is incorrect')
+    enter_organization(db, user, membership)
     audit(db, 'auth.login', user.id, resource_id=user.id)
     db.commit()
     settings = get_settings()
@@ -134,17 +148,19 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(current_user))
 @router.get('/system/status', tags=['System'])
 def status(db: Session = Depends(get_db), user: User = Depends(current_user)):
     health = ready(db)
+    def total(model):
+        return db.scalar(select(func.count()).select_from(model).where(model.organization_id == user.organization_id))
     return {**health, 'modules': [
-        {'id': 'connections','name': 'Data Connections','phase':2,'description':'Configure and test database connectors.', 'count':db.scalar(select(func.count()).select_from(DatabaseConnection))},
-        {'id': 'ingestion','name': 'Data Ingestion','phase':2,'description':'Upload files and move authorized datasets.', 'count':db.scalar(select(func.count()).select_from(IngestionRun))},
-        {'id': 'tables','name': 'Table Management','phase':2,'description':'Create and register source and target tables.', 'count':db.scalar(select(func.count()).select_from(RegisteredTable))},
-        {'id': 'mapping','name': 'Visual Table Mapping','phase':3,'description':'Connect tables, columns, and Medallion layers.', 'count':db.scalar(select(func.count()).select_from(TableMapping))},
-        {'id': 'reconciliation','name': 'Reconciliation','phase':4,'description':'Execute rules and investigate data differences.', 'count':db.scalar(select(func.count()).select_from(ReconciliationRun))},
-        {'id': 'explorer','name': 'Data Explorer','phase':5,'description':'Search, filter, and compare authorized datasets.', 'count':db.scalar(select(func.count()).select_from(RegisteredTable))},
-        {'id': 'reports','name': 'Reports & Visualization','phase':5,'description':'Analyze run history and export detailed reports.', 'count':db.scalar(select(func.count()).select_from(ReconciliationRun))}]}
+        {'id': 'connections','name': 'Data Connections','phase':2,'description':'Configure and test database connectors.', 'count':total(DatabaseConnection)},
+        {'id': 'ingestion','name': 'Data Ingestion','phase':2,'description':'Upload files and move authorized datasets.', 'count':total(IngestionRun)},
+        {'id': 'tables','name': 'Table Management','phase':2,'description':'Create and register source and target tables.', 'count':total(RegisteredTable)},
+        {'id': 'mapping','name': 'Visual Table Mapping','phase':3,'description':'Connect tables, columns, and Medallion layers.', 'count':total(TableMapping)},
+        {'id': 'reconciliation','name': 'Reconciliation','phase':4,'description':'Execute rules and investigate data differences.', 'count':total(ReconciliationRun)},
+        {'id': 'explorer','name': 'Data Explorer','phase':5,'description':'Search, filter, and compare authorized datasets.', 'count':total(RegisteredTable)},
+        {'id': 'reports','name': 'Reports & Visualization','phase':5,'description':'Analyze run history and export detailed reports.', 'count':total(ReconciliationRun)}]}
 
-def inventory(model, fields, db, page, page_size, search, search_field):
-    query = select(model)
+def inventory(model, fields, db, page, page_size, search, search_field, organization_id):
+    query = select(model).where(model.organization_id == organization_id)
     if search:
         query = query.where(search_field.ilike('%' + search.replace('\\','\\\\').replace('%','\\%').replace('_','\\_') + '%', escape='\\'))
     total = db.scalar(select(func.count()).select_from(query.subquery()))
@@ -163,7 +179,7 @@ INVENTORIES = {
 def make_list(model, fields, search_field):
     def list_records(page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100),
                      search: str = Query('', max_length=100), db: Session = Depends(get_db), user: User = Depends(current_user)):
-        return inventory(model, fields, db, page, page_size, search, search_field)
+        return inventory(model, fields, db, page, page_size, search, search_field, user.organization_id)
     return list_records
 
 for path, (model, fields, field) in INVENTORIES.items():
@@ -172,7 +188,7 @@ for path, (model, fields, field) in INVENTORIES.items():
 @router.get('/tables/{table_id}', tags=['Metadata inventories'])
 def table_detail(table_id: UUID, db: Session = Depends(get_db), user: User = Depends(current_user)):
     row = db.get(RegisteredTable, table_id)
-    if not row:
+    if not row or row.organization_id != user.organization_id:
         raise HTTPException(404, 'Table not found')
     return {field: getattr(row, field) for field in ['id','connection_id','database_name','schema_name','table_name','description','classification','layer_id','created_at','updated_at']}
 
@@ -184,20 +200,42 @@ def table_schema(table_id: UUID, db: Session = Depends(get_db), user: User = Dep
 
 @router.get('/settings/users', tags=['Administration'])
 def users(page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), db: Session = Depends(get_db), user: User = Depends(admin_user)):
-    return inventory(User, ['id','email','name','role','active','created_at'], db, page, page_size, '', User.email)
+    members = select(User, OrganizationMembership.role).join(OrganizationMembership, OrganizationMembership.user_id == User.id).where(
+        OrganizationMembership.organization_id == user.organization_id)
+    total = db.scalar(select(func.count()).select_from(members.subquery()))
+    rows = db.execute(members.order_by(User.created_at.desc(), User.id).offset((page-1)*page_size).limit(page_size)).all()
+    return {'items': [{'id': row.id, 'email': row.email, 'name': row.name, 'role': role, 'active': row.active, 'created_at': row.created_at} for row, role in rows],
+            'total': total, 'page': page, 'page_size': page_size}
+
+@router.get('/organization', tags=['Administration'])
+def organization_detail(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    members = db.scalar(select(func.count()).select_from(OrganizationMembership).where(OrganizationMembership.organization_id == user.organization_id))
+    return {'id': user.organization_id, 'name': user.organization_name, 'members': members}
+
+@router.patch('/organization', tags=['Administration'])
+def rename_organization(payload: OrganizationUpdate, db: Session = Depends(get_db), user: User = Depends(admin_user)):
+    organization = db.get(Organization, user.organization_id)
+    organization.name = payload.name
+    audit(db, 'organization.renamed', user.id, 'organization', organization.id)
+    db.commit()
+    return {'id': organization.id, 'name': organization.name}
 
 @router.post('/settings/users', response_model=UserView, status_code=201, tags=['Administration'])
 def create_user(payload: CreateUser, db: Session = Depends(get_db), user: User = Depends(admin_user)):
-    row = User(email=str(payload.email).lower(), name=payload.name.strip(), role=payload.role,
+    row = User(email=str(payload.email).lower(), name=payload.name.strip(),
                password_hash=password_hasher.hash(payload.password), preferences={})
     if not row.name:
         raise HTTPException(422, 'Name cannot be blank')
     db.add(row)
     try:
         db.flush()
-        audit(db, 'user.created', user.id, resource_id=row.id, details={'role': row.role})
+        # New accounts join the administrator's organization with the chosen role.
+        membership = OrganizationMembership(organization_id=user.organization_id, user_id=row.id, role=payload.role)
+        db.add(membership)
+        db.flush()
+        audit(db, 'user.created', user.id, resource_id=row.id, details={'role': payload.role})
         db.commit()
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, 'Email is already registered') from None
-    return row
+    return enter_organization(db, row, membership)

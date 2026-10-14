@@ -90,7 +90,7 @@ def complete_oauth(db,user,state,code):
     auth=db.scalar(select(IntegrationAuthConfiguration).where(IntegrationAuthConfiguration.state_hash==state_hash).with_for_update())
     if not auth or not auth.state_expires_at or auth.state_expires_at<utcnow():raise HTTPException(400,'Authorization state is invalid or expired')
     connection=db.get(IntegrationConnection,auth.connection_id)
-    if connection.owner_id!=user.id or connection.status=='revoked':raise HTTPException(403,'Authorization does not belong to this account')
+    if connection.organization_id!=user.organization_id or connection.status=='revoked':raise HTTPException(403,'Authorization does not belong to this organization')
     creds=read_secrets(auth);verifier=creds.pop('pkce_verifier',None)
     if not verifier:raise HTTPException(400,'Authorization verifier is missing')
     # Consume state before exchange. A failed exchange requires a fresh authorization.

@@ -16,6 +16,7 @@ from app.connectors import integrations as adapters
 from app.services import integration_data
 from app.schemas.reconciliation import Branch
 from app.reconciliation.engine import compare,joined
+from tests.conftest import make_user,sign_in
 
 @pytest.fixture
 def authorized_hosts(monkeypatch):
@@ -59,15 +60,22 @@ def test_validation_does_not_echo_rejected_password_or_token(signed_in,authorize
     response=signed_in.post('/api/auth/login',json={'email':'admin@example.com','password':'private-password-'*20})
     assert response.status_code==422 and 'private-password-' not in response.text
 
-def test_owner_isolation_and_viewer_write_denial(signed_in,db,authorized_hosts):
+def test_organization_isolation_and_viewer_write_denial(signed_in,db,admin,authorized_hosts):
     row=create(signed_in)
-    viewer=User(email='other@example.com',name='Other',role='viewer',password_hash=password_hasher.hash('Other-password-1234'),preferences={})
-    db.add(viewer);db.commit()
-    signed_in.post('/api/auth/logout')
-    assert signed_in.post('/api/auth/login',json={'email':viewer.email,'password':'Other-password-1234'}).status_code==200
+    # A colleague in the same organization can see the connection but, as a viewer, cannot change anything.
+    colleague=make_user(db,'colleague@example.com','viewer','Other-password-1234',organization=admin.organization_id)
+    sign_in(signed_in,colleague,'Other-password-1234')
+    assert signed_in.get('/api/integrations/'+row['id']).status_code==200
+    assert signed_in.get('/api/integrations').json()['total']==1
+    assert signed_in.post('/api/integrations',json=payload()).status_code==403
+    assert signed_in.delete('/api/integrations/'+row['id']).status_code==403
+    # Even an administrator of another organization cannot see or reach it.
+    outsider=make_user(db,'other@example.com','admin','Other-password-1234',organization_name='Another organization')
+    sign_in(signed_in,outsider,'Other-password-1234')
     assert signed_in.get('/api/integrations/'+row['id']).status_code==404
     assert signed_in.get('/api/integrations').json()['total']==0
-    assert signed_in.post('/api/integrations',json=payload()).status_code==403
+    assert signed_in.post('/api/integrations/'+row['id']+'/test').status_code==404
+    assert signed_in.delete('/api/integrations/'+row['id']).status_code==404
 
 def test_host_allowlists_and_private_addresses(monkeypatch):
     settings=get_settings()

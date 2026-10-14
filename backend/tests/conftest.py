@@ -10,7 +10,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import password_hasher
 from app.main import app
-from app.models import User
+from app.models import User,Organization,OrganizationMembership
 from pathlib import Path
 
 @pytest.fixture(scope='session')
@@ -52,11 +52,23 @@ def client(db):
         yield c
     app.dependency_overrides.clear()
 
+def make_user(db,email,role,password,organization=None,organization_name='Test organization'):
+    """Create an account with one membership; a new organization is created unless one is given."""
+    if organization is None:
+        organization=Organization(name=organization_name);db.add(organization);db.flush()
+    user=User(email=email,name=email.split('@')[0].title(),password_hash=password_hasher.hash(password),preferences={})
+    db.add(user);db.flush()
+    db.add(OrganizationMembership(organization_id=getattr(organization,'id',organization),user_id=user.id,role=role));db.commit()
+    user.organization_id=getattr(organization,'id',organization);user.role=role
+    return user
+
+def sign_in(client,user,password):
+    client.post('/api/auth/logout')
+    assert client.post('/api/auth/login',json={'email':user.email,'password':password}).status_code==200
+
 @pytest.fixture
 def admin(db):
-    user=User(email='admin@example.com',name='Test Admin',role='admin',password_hash=password_hasher.hash('Test-password-1234'),preferences={})
-    db.add(user);db.commit()
-    return user
+    return make_user(db,'admin@example.com','admin','Test-password-1234')
 
 @pytest.fixture
 def signed_in(client,admin):

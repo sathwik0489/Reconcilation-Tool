@@ -31,7 +31,7 @@ def ensure_registered(db,connection,resource,classification=None):
     row=db.scalar(select(RegisteredTable).where(RegisteredTable.connection_id==connection.database_connection_id,
         RegisteredTable.schema_name==schema,RegisteredTable.table_name==name))
     if not row:
-        row=RegisteredTable(connection_id=connection.database_connection_id,database_name=config.get('database_name') or application_slug(db,connection),
+        row=RegisteredTable(organization_id=connection.organization_id,connection_id=connection.database_connection_id,database_name=config.get('database_name') or application_slug(db,connection),
             schema_name=schema,table_name=name,classification=classification or config['classification'])
         db.add(row);db.flush()
     resource.registered_table_id=row.id
@@ -142,12 +142,12 @@ def ingest(db,source,resource,destination,payload,user):
         config.registered_table_id=target.id
         if payload.mode=='incremental' and rows:
             config.watermark_value=str(max((r[payload.watermark_column] for r in rows),key=convert))
-        ingestion_config=IngestionConfiguration(name=(source.name+' → '+target.table_name)[:100],source_connection_id=source.database_connection_id,
+        ingestion_config=IngestionConfiguration(organization_id=source.organization_id,name=(source.name+' → '+target.table_name)[:100],source_connection_id=source.database_connection_id,
             destination_connection_id=destination.database_connection_id,source_table_id=source_table.id,destination_table_id=target.id,
             ingestion_type='external',mode=payload.mode,watermark_column=payload.watermark_column,watermark_value=config.watermark_value,owner_id=user.id,
             options={'integration_sync_configuration_id':str(config.id)})
         db.add(ingestion_config);db.flush()
-        db.add(IngestionRun(configuration_id=ingestion_config.id,status='succeeded',record_count=len(rows),started_at=run.started_at,completed_at=utcnow(),executed_by=user.id))
+        db.add(IngestionRun(organization_id=source.organization_id,configuration_id=ingestion_config.id,status='succeeded',record_count=len(rows),started_at=run.started_at,completed_at=utcnow(),executed_by=user.id))
         run.status='succeeded';run.record_count=len(rows);run.completed_at=utcnow();source.last_successful_sync=utcnow()
         audit(db,'integration.ingested',user.id,'integration',source.id,{'rows':len(rows),'target_table_id':str(target.id)})
         db.commit()

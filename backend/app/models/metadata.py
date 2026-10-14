@@ -14,20 +14,38 @@ class Identity:
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+class Organization(Identity, Base):
+    __tablename__ = 'organizations'
+    name: Mapped[str] = mapped_column(String(100))
+
+class OrgScoped:
+    """Rows that belong to exactly one organization; every query must filter on it."""
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('organizations.id'), index=True)
+
 class User(Identity, Base):
     __tablename__ = 'users'
     email: Mapped[str] = mapped_column(String(254), unique=True)
     name: Mapped[str] = mapped_column(String(100))
     password_hash: Mapped[str] = mapped_column(Text)
-    role: Mapped[str] = mapped_column(String(20), default='viewer')
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     token_version: Mapped[int] = mapped_column(Integer, default=0)
     preferences: Mapped[dict] = mapped_column(JSONB, default=dict)
-    __table_args__ = (CheckConstraint("role IN ('admin','engineer','viewer')", name='user_role'),)
+    # Not columns: the session's organization and the role held there, set per request by app.core.security.
+    role = None
+    organization_id = None
+    organization_name = None
 
-class DatabaseConnection(Identity, Base):
+class OrganizationMembership(Identity, Base):
+    __tablename__ = 'organization_memberships'
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('organizations.id', ondelete='CASCADE'), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), index=True)
+    role: Mapped[str] = mapped_column(String(20), default='viewer')
+    __table_args__ = (UniqueConstraint('organization_id','user_id', name='unique_membership'),
+                     CheckConstraint("role IN ('admin','engineer','analyst','viewer')", name='membership_role'))
+
+class DatabaseConnection(OrgScoped, Identity, Base):
     __tablename__ = 'database_connections'
-    name: Mapped[str] = mapped_column(String(100), unique=True)
+    name: Mapped[str] = mapped_column(String(100))
     connection_type: Mapped[str] = mapped_column(String(30))
     classification: Mapped[str] = mapped_column(String(10))
     hostname: Mapped[str | None] = mapped_column(String(255))
@@ -40,7 +58,8 @@ class DatabaseConnection(Identity, Base):
     credential_reference: Mapped[str | None] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text)
     owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('users.id'))
-    __table_args__ = (CheckConstraint("classification IN ('source','target')", name='connection_classification'),
+    __table_args__ = (UniqueConstraint('organization_id','name', name='unique_connection_name'),
+                     CheckConstraint("classification IN ('source','target')", name='connection_classification'),
                      CheckConstraint('port IS NULL OR (port > 0 AND port < 65536)', name='connection_port'))
 
 class MedallionLayer(Identity, Base):
@@ -50,7 +69,7 @@ class MedallionLayer(Identity, Base):
     ordinal: Mapped[int] = mapped_column(Integer, unique=True)
     __table_args__ = (CheckConstraint("name IN ('bronze','silver','gold')", name='layer_name'),)
 
-class RegisteredTable(Identity, Base):
+class RegisteredTable(OrgScoped, Identity, Base):
     __tablename__ = 'registered_tables'
     connection_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('database_connections.id'), index=True)
     database_name: Mapped[str] = mapped_column(String(128))
@@ -73,7 +92,7 @@ class TableColumn(Identity, Base):
     default_value: Mapped[str | None] = mapped_column(Text)
     __table_args__ = (UniqueConstraint('table_id','name'), UniqueConstraint('table_id','ordinal'))
 
-class IngestionConfiguration(Identity, Base):
+class IngestionConfiguration(OrgScoped, Identity, Base):
     __tablename__ = 'ingestion_configurations'
     name: Mapped[str] = mapped_column(String(100))
     source_connection_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('database_connections.id'))
@@ -88,7 +107,7 @@ class IngestionConfiguration(Identity, Base):
     owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('users.id'))
     __table_args__ = (CheckConstraint("mode IN ('full','incremental')", name='ingestion_mode'),)
 
-class IngestionRun(Identity, Base):
+class IngestionRun(OrgScoped, Identity, Base):
     __tablename__ = 'ingestion_runs'
     configuration_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('ingestion_configurations.id'), index=True)
     status: Mapped[str] = mapped_column(String(20), default='queued')
@@ -100,7 +119,7 @@ class IngestionRun(Identity, Base):
     __table_args__ = (CheckConstraint("status IN ('queued','running','succeeded','failed')", name='ingestion_status'),
                      CheckConstraint('record_count >= 0', name='ingestion_count'))
 
-class TableMapping(Identity, Base):
+class TableMapping(OrgScoped, Identity, Base):
     __tablename__ = 'table_mappings'
     name: Mapped[str] = mapped_column(String(100))
     mapping_type: Mapped[str] = mapped_column(String(20))
@@ -134,7 +153,7 @@ class ColumnMapping(Identity, Base):
     transformation: Mapped[dict] = mapped_column(JSONB, default=dict)
     __table_args__ = (UniqueConstraint('edge_id','source_column_id','target_column_id'),)
 
-class ReconciliationJob(Identity, Base):
+class ReconciliationJob(OrgScoped, Identity, Base):
     __tablename__ = 'reconciliation_jobs'
     name: Mapped[str] = mapped_column(String(100))
     mapping_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('table_mappings.id'))
@@ -148,7 +167,7 @@ class ReconciliationRule(Identity, Base):
     rule_type: Mapped[str] = mapped_column(String(40))
     configuration: Mapped[dict] = mapped_column(JSONB, default=dict)
 
-class ReconciliationRun(Identity, Base):
+class ReconciliationRun(OrgScoped, Identity, Base):
     __tablename__ = 'reconciliation_runs'
     job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('reconciliation_jobs.id'), index=True)
     executed_by: Mapped[uuid.UUID] = mapped_column(ForeignKey('users.id'))
@@ -186,6 +205,8 @@ class ReconciliationDifference(Identity, Base):
 
 class AuditLog(Identity, Base):
     __tablename__ = 'audit_logs'
+    # Null only for events with no signed-in organization, such as a failed sign-in.
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey('organizations.id'), index=True)
     actor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey('users.id'), index=True)
     action: Mapped[str] = mapped_column(String(100), index=True)
     resource_type: Mapped[str] = mapped_column(String(60))

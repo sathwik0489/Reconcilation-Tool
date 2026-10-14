@@ -38,7 +38,7 @@ npm.cmd run build
 Pop-Location
 ```
 
-`init_env.py` refuses to overwrite existing secrets. `dev-db.ps1` defaults to `C:\Program Files\PostgreSQL\18\bin`; pass `-PgBin 'your installed bin path'` if needed. Enter your own administrator email, display name, and password at the bootstrap prompts. Account creation is available from Settings after sign-in.
+`init_env.py` refuses to overwrite existing secrets. `dev-db.ps1` defaults to `C:\Program Files\PostgreSQL\18\bin`; pass `-PgBin 'your installed bin path'` if needed. Enter your own administrator email, display name, organization name, and password at the bootstrap prompts. Account creation is available from Settings after sign-in.
 
 In separate terminals:
 

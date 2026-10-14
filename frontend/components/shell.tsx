@@ -27,7 +27,7 @@ export function Shell({user,section,children}:{user:User;section:string;children
   return <div className="app-shell">
     <aside className={`sidebar ${open?'is-open':''}`}>
       <Link href="/dashboard" className="brand" aria-label="Reconviora dashboard"><Brand/></Link>
-      <div className="workspace-label"><span className="workspace-dot"/>Metadata workspace<ArrowUpRight size={16}/></div>
+      <div className="workspace-label"><span className="workspace-dot"/><span className="workspace-name">{user.organization_name}</span><ArrowUpRight size={16}/></div>
       <div className="nav-caption">WORKSPACE</div>
       <nav aria-label="Main navigation">{navigation.map(({id,label,icon:Icon})=><Link onClick={()=>setOpen(false)} key={id} href={`/${id}`} className={section===id?'nav-item selected':'nav-item'} aria-current={section===id?'page':undefined}><Icon size={21}/><span>{label}</span></Link>)}</nav>
       <div className="sidebar-foot"><div className="foundation-pill">CONNECTED DATA WORKSPACE</div><p>Your data. A clearer picture.</p><div className="profile"><span className="avatar">{user.name.slice(0,2).toUpperCase()}</span><div><strong>{user.name}</strong><span>{user.role}</span></div><button className="icon-button" onClick={logout} disabled={signingOut} aria-label="Sign out"><LogOut size={20}/></button></div>{error&&<p role="alert">{error}</p>}</div>

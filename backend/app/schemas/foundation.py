@@ -12,7 +12,9 @@ class UserView(BaseModel):
     id: UUID
     email: str
     name: str
-    role: Literal['admin','engineer','viewer']
+    role: Literal['admin','engineer','analyst','viewer']
+    organization_id: UUID
+    organization_name: str
     preferences: dict
 
 class Preferences(BaseModel):
@@ -26,4 +28,8 @@ class CreateUser(BaseModel):
     email: EmailStr
     name: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=12, max_length=128)
-    role: Literal['admin','engineer','viewer'] = 'viewer'
+    role: Literal['admin','engineer','analyst','viewer'] = 'viewer'
+
+class OrganizationUpdate(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=100)

@@ -28,7 +28,7 @@ Empty allowlists deny all external network connections. Private addresses requir
 
 PostgreSQL connections pin hostaddr and require TLS; use a **separate data database** and an explicitly authorized existing schema. The application metadata database name is blocked as a data destination. Use source accounts with SELECT only and target accounts limited to the approved schema. Grant CREATE only when table creation is required. The isolated native metadata cluster is not a TLS-enabled data connector demonstration database.
 
-Use README's Windows/macOS setup. Existing installations: install updated backend requirements, run `alembic upgrade head`, run `npm ci`/`npm run build`, restart services. Current migration head is `0003_files`; the original 18 metadata tables remain, seven integration metadata tables are added, and the connector catalog is seeded. Docker includes a persistent authorized-files volume; the supplied definitions still require actual Docker validation.
+Use README's Windows/macOS setup. Existing installations: install updated backend requirements, run `alembic upgrade head`, run `npm ci`/`npm run build`, restart services. Current migration head is `0004_organizations`; the original 18 metadata tables remain, seven integration metadata tables and two organization tables are added, and the connector catalog is seeded. Docker includes a persistent authorized-files volume; the supplied definitions still require actual Docker validation.
 
 ## Authorization workflow
 
@@ -70,7 +70,7 @@ Optional webhook signing secrets enable `POST /api/integrations/{id}/webhook`. S
 
 ## API additions
 
-All requested integration endpoints are implemented: list/create/detail, authorize/test, resources/schema/preview, ingest, sync-history, revoke. Additional endpoints include `/integrations/catalog`, OAuth callback, resource schema approval, signed webhook, secure CSV ingestion, global `/search`, `/notifications`, table DDL preview/create/register/layer/preview, `/workflows/tables`, mapping create/detail, reconciliation run/detail/results/differences/CSV export. Existing API/session/preferences/inventories remain functional. Engineer/admin roles are required for writes. Owner checks protect executable integrations/resources; admins have workspace-wide administration. OpenAPI provides the exact request schemas at `/api/docs` in development.
+All requested integration endpoints are implemented: list/create/detail, authorize/test, resources/schema/preview, ingest, sync-history, revoke. Additional endpoints include `/integrations/catalog`, OAuth callback, resource schema approval, signed webhook, secure CSV ingestion, global `/search`, `/notifications`, table DDL preview/create/register/layer/preview, `/workflows/tables`, mapping create/detail, reconciliation run/detail/results/differences/CSV export. Existing API/session/preferences/inventories remain functional. Every connection, table, mapping, run and audit entry belongs to one organization, and every endpoint filters on the signed-in organization; another organization's records return 404. Within an organization, members share its connections, tables, mappings and results, and the role decides what they may change: administrators and engineers manage connections, ingestion and tables; analysts also save mappings and run reconciliations; viewers only read. See [organizations and roles](organizations.md). OpenAPI provides the exact request schemas at `/api/docs` in development.
 
 ## Enterprise interface
 
